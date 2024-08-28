@@ -28,23 +28,23 @@ while getopts hc: flag; do
 done
 
 #prechecks
-internetfn(){
+internetfn() {
     echo "Checking internet access by sending a ping to Cloudflare (1.1.1.1)."
     if ping -c 1 1.1.1.1 &> /dev/null ; then
         echo "Internet access is available."
     else
-        echo "No internet access, checking rfkill."
-        if rfkill list wifi | grep -q "Hard blocked: yes" ; then
-            echo "Wifi is hard blocked (Blocked via hardware switch.)"
-            exit 1
-        elif rfkill list wifi | grep -q "Soft blocked: yes" ; then
-            echo "Wifi is soft blocked, overriding (Blocked via software.)"
-            rfkill unblock wifi
-            echo "Connect to wifi via "
-        fi
-        
+        echo -e "No internet access, read "https://wiki.gentoo.org/wiki/Handbook:AMD64/Installation/Networking"\nOn other device, to figure out how to get online."
+        exit 1
     fi
-    sleep 1
+}
+
+distrocheck() {
+    if [ -f /etc/gentoo-release ] ; then
+        echo "Gentoo media detected."
+    else
+        echo "Please use Gentoo Minimal Installation CD or other Gentoo system."
+        exit 1
+    fi
 }
 
 architecturefn() {
@@ -53,22 +53,26 @@ architecturefn() {
     select opt in "${options[@]}"
     do
         case $opt in
-            "amd64") architecture="openrc"
+            "amd64") architecture="amd64"
+            rootfscode="8304"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
-            "x86") architecture="systemd"
+            "x86") architecture="x86"
+            rootfscode="8303"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
-            "arm64") architecture="riscv"
+            "arm64") architecture="arm64"
+            rootfscode="8305"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
-            "riscv") architecture="systemd"
+            "riscv") architecture="riscv"
+            rootfscode="8300"
             clear
             echo "Architecture chosen $architecture."
             break;;
@@ -140,17 +144,25 @@ getstage3archivefn() {
 
 #partitioning 
 
+#dualboot() {
+#
+#}
+
+
 #fn (DISK use)
 selectdiskfn() {
     listblk=$(lsblk -d -n -o NAME)
     PS3="Please select a disk: "
+    static_options=()
+    dynamic_options=()
     options=()
-    names=()
 
+    static_options=("Open Documentation" "Exit")
     while read -r line ; do
         NAME=$(echo "$line")
-        options+=("$NAME")
+        dynamic_options+=("$NAME")
     done <<< "$listblk"
+    options=("${dynamic_options[@]}" "${static_options[@]}")
 
     select opt in "${options[@]}"; do
         if [[ -n "$opt" ]]; then
@@ -160,6 +172,15 @@ selectdiskfn() {
             echo "Invalid selection. Please choose a valid number."
         fi
     done
+    case $opt in
+        "Open Documentation") clear
+        echo "need to make docs"
+        selectdiskfn;;
+
+        "Exit")
+        exit
+        ;;
+    esac
 }
 
 checkpartitionfn() {
@@ -177,28 +198,18 @@ disklayoutfn() {
     do
         case $opt in
             "Normal") disklayout="normal"
-            clear
-            echo "Layout chosen normal."
             break;;
 
             "LVM") disklayout="lvm"
-            clear
-            echo "Layout chosen LVM."
             break;;
 
             "Encrypted Root+Home") disklayout="encroothome"
-            clear
-            echo "Layout chosen Encrypted Root+Home."
             break;;
 
             "Encrypted Home") disklayout="enchome"
-            clear
-            echo "Layout chosen Encrypted Home."
             break;;
             
             "Full Disk Encryption") disklayout="fde"
-            clear
-            echo "Layout chosen Full Disk Encryption."
             break;;
 
             "Open Documentation") clear
@@ -213,20 +224,164 @@ disklayoutfn() {
     done
 }
 
-partitiondiskfn() {
-    if [ $disklayout = "normal" ] ; then
-        pass
-    elif [ $disklayout = "lvm" ] ; then
-        pass
-    elif [ $disklayout = "encroothome" ] ; then
-        pass
-    elif [ $disklayout = "enchome" ] ; then
-        pass
-    elif [ $disklayout = "fde" ] ; then
-        pass
+choosefsfn() {
+    PS3="Please select a filesystem: "
+    options=("ext4" "btrfs" "xfs" "Open Documentation" "Exit")
+    select opt in "${options[@]}"
+    do
+        case $opt in
+            "ext4") diskfs="ext4"
+            break;;
+
+            "btrfs") diskfs="btrfs"
+            break;;
+
+            "xfs") diskfs="xfs"
+            break;;
+
+            "Open Documentation") clear
+            echo "I need to make the docs still."
+            sleep 5
+            choosefsfn
+            break;;
+
+            "Exit") exit ;;
+            *) echo "Wrong option please select again"; choosefsfn;;
+        esac
+    done
+}
+
+formatwarningfn() {
+    echo "Selected disk: \"$SELECTED_DISK\" listed below, verify it is correct."
+    parted /dev/$SELECTED_DISK print
+    read -p "Press Enter to continue..."
+    sgdisk -Z /dev/$SELECTED_DISK
+    echo "Disk has been formated."
+    clear
+}
+
+# $1 = luks version
+# $2 = disk num to encrypt
+encryptdiskfn() {
+    luksv=$1
+    encdisk=$2
+    echo "Choose a encryption algorium/pbkdf/hash to use, read docs for further info."
+    PS3="Select a encryption algorium: "
+    options=("serpent+argon2id+whirlpool" "serpent+pbkdf2+sha512" "aes+pbkdf2+sha512" "Open Documentation" "Exit")
+    select opt in "${options[@]}"
+    do
+        case $opt in
+            "serpent+argon2id+whirlpool") algo="saw"
+            break;;
+
+            "serpent+pbkdf2+sha512") algo="sps"
+            break;;
+
+            "aes+pbkdf2+sha512") algo="aps"
+            break;;
+
+            "Open Documentation") clear
+            echo "I need to make the docs still."
+            sleep 5
+            encryptdiskfn
+            break;;
+
+            "Exit") exit ;;
+            *) echo "Wrong option please select again"; encryptdiskfn;;
+        esac
+    done
+
+    echo -e "Making encrypted partition on $SELECTED_DISK$2,\nUsing luks$luksv"
+    read -ps "Enter luks password: "
+}
+
+layoutnormalfn() {
+    echo "Creating EFI partition."
+    read -p "Enter size of EFI partition in MiB (Enter integer value): " efisize
+    if [[ ! "$efisize" =~ ^-?[0-9]+$ ]]; then
+        echo "Enter a integer only."
+        layoutnormalfn
+    fi
+    sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
+    
+    echo "Creating root partition."
+    read -p "Enter size of root partition in GiB (Enter integer value or useleftover): " rootsize
+    if [ $rootsize = "useleftover" ] ; then
+        sgdisk --new=2:-0 --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
+    elif [[ ! "$rootsize" =~ ^-?[0-9]+$ ]]; then
+        echo "Enter a integer only."
+        layoutnormalfn
+    else
+        sgdisk --new=2:0:+"$rootsize"G --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
+    fi
+}
+
+layoutenchomefn() {
+    echo "Creating EFI partition."
+    read -p "Enter size of EFI partition in MiB (Enter integer value): " efisize
+    if [[ ! "$efisize" =~ ^-?[0-9]+$ ]]; then
+        echo "Enter a integer only."
+        layoutnormalfn
+    fi
+    sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
+    
+    echo "Creating root partition."
+    read -p "Enter size of root partition in GiB, eg 50Gib (Enter integer value): " rootsize
+    if [[ ! "$rootsize" =~ ^-?[0-9]+$ ]]; then
+        echo "Enter a integer only."
+        layoutenchomefn
+    else
+        sgdisk --new=2:0:+"$rootsize"G --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
     fi
 
+    echo "Creating home partition."
+    read -p "Enter size of home partition in GiB (Enter integer value or useleftover): " homesize
+    if [ $homesize = "useleftover" ] ; then
+        sgdisk --new=3:-0 --typecode=3:8302 --change-name=3:"HOME" /dev/$SELECTED_DISK 
+    elif [[ ! "$homesize" =~ ^-?[0-9]+$ ]]; then
+        echo "Enter a integer only."
+        layoutenchomefn
+    else
+        sgdisk --new=3:0:+"$homesize"G --typecode=3:8302 --change-name=3:"HOME" /dev/$SELECTED_DISK 
+    fi
 
+}
+
+partitiondiskfn() {
+    if [ $disklayout = "normal" ] ; then
+        formatwarningfn
+        layoutnormalfn
+        echo "Root filesystem."
+        choosefsfn
+        mkfs.fat -F32 /dev/"$SELECTED_DISK"1
+        mkfs."$diskfs" /dev/"$SELECTED_DISK"2
+    elif [ $disklayout = "lvm" ] ; then
+        formatwarningfn
+        echo "still need to be implemented"
+        exit
+    elif [ $disklayout = "encroothome" ] ; then
+        formatwarningfn
+        echo "still need to be implemented"
+        exit
+    elif [ $disklayout = "enchome" ] ; then
+        formatwarningfn
+        layoutenchomefn
+        echo "Enter / filesystem."
+        choosefsfn
+        rootfs=$diskfs
+        read -p "Enter password"
+
+        mkfs.fat -F32 /dev/"$SELECTED_DISK"1
+        mkfs."$rootfs" /dev/"$SELECTED_DISK"2
+
+        echo "Enter /home filesystem."
+        choosefsfn
+        homefs=$diskfs
+    elif [ $disklayout = "fde" ] ; then
+        formatwarningfn
+        echo "still need to be implemented"
+        exit
+    fi
 }
 
 #user infomation
@@ -248,12 +403,20 @@ echo -e "Note: This is for people that at least know the basics of linux,\nif yo
 read -p "Press Enter to continue..."
 clear
 
+distrocheck
 internetfn
+architecturefn
 clear
 
 echo "Select disk to install to."
+echo "Note: Double check which disk to install to, before DELETING ALL YOUR DATA on the wrong disk."
 selectdiskfn
+echo -e "Selected disk: $SELECTED_DISK\n"
 
 echo "What disk layout do you wish to install."
 disklayoutfn
+echo -e "Selected layout: $disklayout\n"
+
+echo "Starting to partition disk."
+partitiondiskfn
 
