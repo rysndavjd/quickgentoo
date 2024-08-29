@@ -1,6 +1,5 @@
 #!/bin/bash
 
-dd if=/dev/zero of=./loopfile bs=1024 count=10000000
-
-losetup /dev/loop0 ./loopfile
-mount /dev/loop0 ./mnt
+sudo modprobe nbd
+sudo qemu-img create -f qcow2 image.qcow2 10G
+sudo qemu-nbd --connect=/dev/nbd0 image.qcow2

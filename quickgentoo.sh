@@ -3,6 +3,7 @@
 version=0.1
 PASSWORD=""
 ROOTPASSWORD=""
+efifs=""
 
 if [ "$(id -u)" != 0 ] ; then 
     echo "Run as root."
@@ -49,7 +50,7 @@ distrocheck() {
 
 architecturefn() {
     PS3="Select architecture to install for: "
-    options=("amd64" "x86" "arm64" "riscv" "Open Documentation" "Exit" )
+    options=("amd64" "x86" "arm64" "riscv" "Open Documentation" "Exit")
     select opt in "${options[@]}"
     do
         case $opt in
@@ -260,6 +261,26 @@ formatwarningfn() {
     clear
 }
 
+# $1 = partition num
+# $2 = filesystem
+makefsfn() {
+    diskpart=$(ls /dev/"$SELECTED_DISK"*1)
+    #Nvme disk used
+    if echo "nvme" | grep $SELECTED_DISK ; then
+        echo "meh"
+    #sata disk used
+    elif echo "sd" | grep $SELECTED_DISK ; then
+        echo "meh"
+    #nbd disk used
+    elif echo "nbd" | grep $SELECTED_DISK ; then
+        echo ""$SELECTED_DISK"p"$1""
+    fi
+    
+    
+    #mkfs.fat -F$efifs $diskpart
+    #mkfs."$diskfs" /dev/"$SELECTED_DISK"*2
+}
+
 # $1 = luks version
 # $2 = disk num to encrypt
 encryptdiskfn() {
@@ -301,9 +322,13 @@ layoutnormalfn() {
     if [[ ! "$efisize" =~ ^-?[0-9]+$ ]]; then
         echo "Enter a integer only."
         layoutnormalfn
+    elif [ "$efisize" -lt 32 ] ; then
+        echo "Partition smaller than 32M, please make a bigger partition."
+    else
+        echo "Partition bigger than 32M using FAT32"
+        sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
     fi
-    sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
-    
+        
     echo "Creating root partition."
     read -p "Enter size of root partition in GiB (Enter integer value or useleftover): " rootsize
     if [ $rootsize = "useleftover" ] ; then
@@ -353,8 +378,10 @@ partitiondiskfn() {
         layoutnormalfn
         echo "Root filesystem."
         choosefsfn
-        mkfs.fat -F32 /dev/"$SELECTED_DISK"1
-        mkfs."$diskfs" /dev/"$SELECTED_DISK"2
+        echo "Creating EFI fs."
+        makefs 1 "fat"
+        echo "Creating / fs."
+        
     elif [ $disklayout = "lvm" ] ; then
         formatwarningfn
         echo "still need to be implemented"
@@ -371,7 +398,7 @@ partitiondiskfn() {
         rootfs=$diskfs
         read -p "Enter password"
 
-        mkfs.fat -F32 /dev/"$SELECTED_DISK"1
+        mkfs.fat -F$efifs /dev/"$SELECTED_DISK"1
         mkfs."$rootfs" /dev/"$SELECTED_DISK"2
 
         echo "Enter /home filesystem."
