@@ -263,22 +263,39 @@ formatwarningfn() {
 
 # $1 = partition num
 # $2 = filesystem
+# $3 = if subvolume eg in /dev/mapper
 makefsfn() {
-    diskpart=$(ls /dev/"$SELECTED_DISK"*1)
-    #Nvme disk used
-    if echo "nvme" | grep $SELECTED_DISK ; then
-        echo "meh"
-    #sata disk used
-    elif echo "sd" | grep $SELECTED_DISK ; then
-        echo "meh"
-    #nbd disk used
-    elif echo "nbd" | grep $SELECTED_DISK ; then
-        echo ""$SELECTED_DISK"p"$1""
+    if [ "$3" ] ; then
+        echo "$3"
+        exit 1
     fi
     
-    
-    #mkfs.fat -F$efifs $diskpart
-    #mkfs."$diskfs" /dev/"$SELECTED_DISK"*2
+    case "$SELECTED_DISK" in
+        #sata/scsi + ide
+        sd*|hd*)
+            diskpart="${SELECTED_DISK}${1}"
+            ;;
+        #nvme + nbd
+        nvme*|nbd*)
+            diskpart="${SELECTED_DISK}p${1}"
+            ;;
+        *)
+            echo "Unknown disk type: $SELECTED_DISK"
+            exit 1
+            ;;
+    esac
+
+    partprobe /dev/"$SELECTED_DISK"
+    if [ "$2" = "fat" ] ; then 
+        mkfs.fat -F32 /dev/"$diskpart"
+        partprobe /dev/"$SELECTED_DISK"
+    elif [ "$2" = "ext4" ] ; then
+        mkfs.ext4 /dev/$diskpart
+        partprobe /dev/"$SELECTED_DISK"
+    elif [ "$2" = "btrfs" ] ; then
+        mkfs.btrfs $diskpart
+        partprobe /dev/"$SELECTED_DISK"
+    fi
 }
 
 # $1 = luks version
@@ -312,8 +329,43 @@ encryptdiskfn() {
         esac
     done
 
-    echo -e "Making encrypted partition on $SELECTED_DISK$2,\nUsing luks$luksv"
-    read -ps "Enter luks password: "
+    case "$SELECTED_DISK" in
+        #sata/scsi + ide
+        sd*|hd*)
+            diskpart="${SELECTED_DISK}${2}"
+            ;;
+        #nvme + nbd
+        nvme*|nbd*)
+            diskpart="${SELECTED_DISK}p${2}"
+            ;;
+        *)
+            echo "Unknown disk type: $SELECTED_DISK"
+            exit 1
+            ;;
+    esac
+
+    echo -e "Making encrypted partition on $diskpart, luks$luksv "
+    read -s -p "Enter luks password: " lukspw
+    echo "(this may take some time.)"
+    case "$algo" in
+        saw)
+            echo -n "${lukspw}" | cryptsetup luksFormat --type luks2 --cipher serpent-xts-plain64 --iter-time 5000 --key-size 512 --pbkdf argon2id --use-urandom /dev/"$diskpart" --batch-mode --key-file /dev/stdin
+            echo ""
+            ;;
+        sps)
+            echo -n "${lukspw}" | cryptsetup -y -v luksFormat
+            echo ""
+            ;;
+        aps)
+            echo -n "${lukspw}" | cryptsetup -y -v luksFormat
+            echo ""
+            ;;
+        *)
+            echo "Unknown disk type: $SELECTED_DISK"
+            exit 1
+            ;;
+    esac
+    
 }
 
 layoutnormalfn() {
@@ -376,18 +428,18 @@ partitiondiskfn() {
     if [ $disklayout = "normal" ] ; then
         formatwarningfn
         layoutnormalfn
-        echo "Root filesystem."
+        echo "Choose / filesystem."
         choosefsfn
         echo "Creating EFI fs."
-        makefs 1 "fat"
+        makefsfn 1 "fat"
         echo "Creating / fs."
-        
+        makefsfn 2 "$diskfs"
     elif [ $disklayout = "lvm" ] ; then
-        formatwarningfn
+        #formatwarningfn
         echo "still need to be implemented"
         exit
     elif [ $disklayout = "encroothome" ] ; then
-        formatwarningfn
+        #formatwarningfn
         echo "still need to be implemented"
         exit
     elif [ $disklayout = "enchome" ] ; then
@@ -396,16 +448,19 @@ partitiondiskfn() {
         echo "Enter / filesystem."
         choosefsfn
         rootfs=$diskfs
-        read -p "Enter password"
 
-        mkfs.fat -F$efifs /dev/"$SELECTED_DISK"1
-        mkfs."$rootfs" /dev/"$SELECTED_DISK"2
+        echo "Enter luks options for /home."
+        encryptdiskfn 2 3
 
         echo "Enter /home filesystem."
         choosefsfn
         homefs=$diskfs
+
+        echo "Creating EFI fs."
+        makefsfn 1 "fat"
+        
     elif [ $disklayout = "fde" ] ; then
-        formatwarningfn
+        #formatwarningfn
         echo "still need to be implemented"
         exit
     fi
