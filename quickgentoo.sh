@@ -4,6 +4,7 @@ version=0.1
 PASSWORD=""
 ROOTPASSWORD=""
 efifs=""
+lukspw=""
 
 if [ "$(id -u)" != 0 ] ; then 
     echo "Run as root."
@@ -263,14 +264,14 @@ formatwarningfn() {
 
 # $1 = partition num
 # $2 = filesystem
-# $3 = if subvolume eg in /dev/mapper
+# $3 = if subvolume eg in /dev/mapper/home
 makefsfn() {
-    if [ "$3" ] ; then
+    if [ $3 ] ; then 
         echo "$3"
-        exit 1
-    fi
-    
-    case "$SELECTED_DISK" in
+        diskpart="mapper/$3"
+        echo "diskpart: $diskpart"
+    else
+        case "$SELECTED_DISK" in
         #sata/scsi + ide
         sd*|hd*)
             diskpart="${SELECTED_DISK}${1}"
@@ -283,8 +284,9 @@ makefsfn() {
             echo "Unknown disk type: $SELECTED_DISK"
             exit 1
             ;;
-    esac
-
+        esac
+    fi
+    
     partprobe /dev/"$SELECTED_DISK"
     if [ "$2" = "fat" ] ; then 
         mkfs.fat -F32 /dev/"$diskpart"
@@ -368,6 +370,46 @@ encryptdiskfn() {
     
 }
 
+# $1 = disk num to mount
+# $2 = mount point
+mountdiskfn() {
+    case "$SELECTED_DISK" in
+        #sata/scsi + ide
+        sd*|hd*)
+            diskpart="${SELECTED_DISK}${1}"
+            ;;
+        #nvme + nbd
+        nvme*|nbd*)
+            diskpart="${SELECTED_DISK}p${1}"
+            ;;
+        *)
+            echo "Unknown disk type: $SELECTED_DISK"
+            exit 1
+            ;;
+    esac
+    mount /dev/"$diskpart" "$2"
+}
+
+# $1 = disk num to open
+# $2 = luks disk name eg home
+opencryptfn() {
+    case "$SELECTED_DISK" in
+        #sata/scsi + ide
+        sd*|hd*)
+            diskpart="${SELECTED_DISK}${1}"
+            ;;
+        #nvme + nbd
+        nvme*|nbd*)
+            diskpart="${SELECTED_DISK}p${1}"
+            ;;
+        *)
+            echo "Unknown disk type: $SELECTED_DISK"
+            exit 1
+            ;;
+    esac
+    echo -n "${lukspw}" | cryptsetup open /dev/"$diskpart" $2
+}
+
 layoutnormalfn() {
     echo "Creating EFI partition."
     read -p "Enter size of EFI partition in MiB (Enter integer value): " efisize
@@ -379,17 +421,20 @@ layoutnormalfn() {
     else
         echo "Partition bigger than 32M using FAT32"
         sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     fi
         
     echo "Creating root partition."
     read -p "Enter size of root partition in GiB (Enter integer value or useleftover): " rootsize
     if [ $rootsize = "useleftover" ] ; then
         sgdisk --new=2:-0 --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     elif [[ ! "$rootsize" =~ ^-?[0-9]+$ ]]; then
         echo "Enter a integer only."
         layoutnormalfn
     else
         sgdisk --new=2:0:+"$rootsize"G --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     fi
 }
 
@@ -401,7 +446,8 @@ layoutenchomefn() {
         layoutnormalfn
     fi
     sgdisk --new=1:0:+"$efisize"M --typecode=1:ef00 --change-name=1:"EFI" /dev/$SELECTED_DISK 
-    
+    partprobe /dev/$SELECTED_DISK
+
     echo "Creating root partition."
     read -p "Enter size of root partition in GiB, eg 50Gib (Enter integer value): " rootsize
     if [[ ! "$rootsize" =~ ^-?[0-9]+$ ]]; then
@@ -409,19 +455,21 @@ layoutenchomefn() {
         layoutenchomefn
     else
         sgdisk --new=2:0:+"$rootsize"G --typecode=2:"$rootfscode" --change-name=2:"ROOT" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     fi
 
     echo "Creating home partition."
     read -p "Enter size of home partition in GiB (Enter integer value or useleftover): " homesize
     if [ $homesize = "useleftover" ] ; then
         sgdisk --new=3:-0 --typecode=3:8302 --change-name=3:"HOME" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     elif [[ ! "$homesize" =~ ^-?[0-9]+$ ]]; then
         echo "Enter a integer only."
         layoutenchomefn
     else
         sgdisk --new=3:0:+"$homesize"G --typecode=3:8302 --change-name=3:"HOME" /dev/$SELECTED_DISK 
+        partprobe /dev/$SELECTED_DISK
     fi
-
 }
 
 partitiondiskfn() {
@@ -430,10 +478,13 @@ partitiondiskfn() {
         layoutnormalfn
         echo "Choose / filesystem."
         choosefsfn
-        echo "Creating EFI fs."
-        makefsfn 1 "fat"
         echo "Creating / fs."
         makefsfn 2 "$diskfs"
+        echo "Creating EFI fs."
+        makefsfn 1 "fat"
+        mkdir -p /mnt/gentoo
+        mountdiskfn 2 /mnt/gentoo
+        mountdiskfn 1 /mnt/gentoo/boot
     elif [ $disklayout = "lvm" ] ; then
         #formatwarningfn
         echo "still need to be implemented"
@@ -448,17 +499,19 @@ partitiondiskfn() {
         echo "Enter / filesystem."
         choosefsfn
         rootfs=$diskfs
-
         echo "Enter luks options for /home."
         encryptdiskfn 2 3
-
         echo "Enter /home filesystem."
         choosefsfn
         homefs=$diskfs
-
         echo "Creating EFI fs."
         makefsfn 1 "fat"
-        
+        echo "Creating ROOT fs."
+        makefsfn 2 "$rootfs"
+        echo "Creating HOME fs."
+        opencryptfn 3 home
+        makefsfn 3 "$homefs" "home"
+
     elif [ $disklayout = "fde" ] ; then
         #formatwarningfn
         echo "still need to be implemented"
@@ -501,4 +554,6 @@ echo -e "Selected layout: $disklayout\n"
 
 echo "Starting to partition disk."
 partitiondiskfn
+
+
 
