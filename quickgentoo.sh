@@ -4,6 +4,8 @@ version=0.1
 PASSWORD1=""
 username=""
 lukspw=""
+timezone="$(curl --fail https://ipapi.co/timezone)"
+
 
 if [ "$(id -u)" != 0 ] ; then 
     echo "Run as root."
@@ -60,24 +62,32 @@ architecturefn()
         case $opt in
             "amd64") architecture="amd64"
             rootfscode="8304"
+            qemu_user_targets="x86_64"
+            LLVM_TARGETS="X86"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
             "x86") architecture="x86"
             rootfscode="8303"
+            qemu_user_targets="i386"
+            LLVM_TARGETS="X86"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
             "arm64") architecture="arm64"
             rootfscode="8305"
+            qemu_user_targets="aarch64"
+            LLVM_TARGETS="AArch64"
             clear
             echo "Architecture chosen $architecture."
             break;;
 
             "riscv") architecture="riscv"
             rootfscode="8300"
+            qemu_user_targets="riscv64"
+            LLVM_TARGETS="RISCV"
             clear
             echo "Architecture chosen $architecture."
             break;;
@@ -470,31 +480,37 @@ stage3archivefn()
     do
         case $opt in
             "openrc") stage3archive="openrc"
+            initflags="openrc"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
 
             "systemd") stage3archive="systemd"
+            initflags="systemd"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
 
             "desktop-openrc") stage3archive="desktop-openrc"
+            initflags="openrc"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
 
             "desktop-systemd") stage3archive="desktop-systemd"
+            initflags="systemd"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
             
             "hardened-systemd") stage3archive="hardened-systemd"
+            initflags="systemd"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
 
             "hardened-openrc") stage3archive="hardened-openrc"
+            initflags="openrc"
             clear
             echo "Stage3 chosen $stage3archive."
             break;;
@@ -524,12 +540,64 @@ stage3archivefn()
 }
 
 #user/system infomation
+kernelfn()
+{   
+    PS3="Select a kernel to install: "
+    options=("sys-kernel/gentoo-kernel" "sys-kernel/gentoo-kernel-bin" "sys-kernel/gentoo-sources" "sys-kernel/vanilla-kernel" "sys-kernel/vanilla-sources" "Open Documentation" "Exit" )
+    select opt in "${options[@]}"
+    do
+        case $opt in
+            "sys-kernel/gentoo-kernel") kernel="gentoo-kernel"
+            clear
+            echo "Kernel chosen $kernel."
+            break;;
+
+            "sys-kernel/gentoo-kernel-bin") kernel="gentoo-kernel-bin"
+            clear
+            echo "Kernel chosen $kernel."
+            break;;
+
+            "sys-kernel/gentoo-sources") kernel="gentoo-sources"
+            clear
+            echo "Kernel chosen $kernel."
+            break;;
+            
+            "sys-kernel/vanilla-kernel") kernel="vanilla-kernel"
+            clear
+            echo "Kernel chosen $kernel."
+            break;;
+            
+            "sys-kernel/vanilla-sources") kernel="vanilla-sources"
+            clear
+            echo "Kernel chosen $kernel."
+            break;;
+
+            "Open Documentation") clear
+            links https://wiki.gentoo.org/wiki/Handbook:AMD64/Installation/Stage#Choosing_a_stage_file
+            stage3archivefn
+            break;;
+
+            "Exit") exit ;;
+            *) echo "Wrong option please select again"; stage3archivefn;;
+        esac
+    done
+}
+
 usernamefn()
 {   
     read -p "Enter username: " username
     if [ "$username" = *\ * ]; then
         echo "Dont use spaces in username, try again."
         usernamefn
+    fi
+}
+
+hostnamefn()
+{   
+    read -p "Enter hostname: " hostname
+    if [ "$hostname" = *\ * ]; then
+        echo "Dont use spaces in hostname, try again."
+        hostnamefn
     fi
 }
 
@@ -573,12 +641,63 @@ cd /mnt/gentoo
 clear
 
 usernamefn
+hostnamefn
 passwordfn
 stage3archivefn
+kernelfn
 
 cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
+genfstab -U /mnt/gentoo/ > /mnt/gentoo/etc/fstab
+if echo "$stage3archive" | grep "*openrc" ; then
+    echo $timezone > /mnt/gentoo/etc/timezone
+elif echo "$stage3archive" | grep "*systemd" ; then 
+    ln -sf /mnt/gentoo/usr/share/zoneinfo/$timezone /etc/localtime
+fi
+
+echo $hostname > /mnt/gentoo/etc/hostname
 arch-chroot /mnt/gentoo /bin/bash <<EOF
-emerge --ask --verbose --oneshot app-portage/mirrorselect
+emerge --verbose app-portage/mirrorselect app-misc/resolve-march-native
+cpuflags=$(resolve-march-native)
+threads=$(nproc)
+cat > make.conf << EOF
+#GCC/CLANG flags
+COMMON_FLAGS="-O2 -pipe $cpuflags"
+CFLAGS="\${COMMON_FLAGS}"
+CXXFLAGS="\${COMMON_FLAGS}"
+FCFLAGS="\${COMMON_FLAGS}"
+FFLAGS="\${COMMON_FLAGS}"
+
+#Rust flags
+RUSTFLAGS="-C target-cpu=native -C opt-level=2"
+
+LC_MESSAGES=C.utf8
+ACCEPT_LICENSE="* **"
+MAKEOPTS="-j$threads"
+ACCEPT_KEYWORDS="$architecture"
+VIDEO_CARDS=""
+INPUT_DEVICES="synaptics libinput evdev"
+GRUB_PLATFORMS="efi-64"
+qemu_softmmu_targets="i386 x86_64"
+qemu_user_targets="$qemu_user_targets"
+LLVM_TARGETS="$LLVM_TARGETS"
+USE="bash-completion udev policykit"
+EOF
+
 mirrorselect -s10 >> /etc/portage/make.conf
 emerge --sync
+
+echo "sys-kernel/linux-firmware deduplicate unknown-license" > /etc/portage/package.use/linux-firmware
+echo "net-misc/networkmanager -modemmanager" > /etc/portage/package.use/networkmanager
+
+emerge -v net-misc/networkmanager net-misc/openssh app-shells/bash-completion sys-block/io-scheduler-udev-rules sys-boot/grub
+
+if echo "$stage3archive" | grep "*openrc" ; then
+    emerge -v net-misc/chrony
+    rc-update add sshd default
+    rc-update add chronyd default
+elif echo "$stage3archive" | grep "*systemd" ; then 
+    systemctl enable sshd
+    systemctl enable systemd-timesyncd.service
+fi 
+
 EOF
