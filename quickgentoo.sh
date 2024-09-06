@@ -488,12 +488,12 @@ stage3archivefn()
             break;;
             
             "hardened-systemd") stage3archive="hardened-systemd"
-            stage3flags="systemd"
+            stage3flags="systemd hardened -elogind"
             clear
             break;;
 
             "hardened-openrc") stage3archive="hardened-openrc"
-            stage3flags="elogind -systemd "
+            stage3flags="elogind hardened -systemd "
             clear
             break;;
 
@@ -618,6 +618,9 @@ kernelfn
 cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
 genfstab -U /mnt/gentoo/ > /mnt/gentoo/etc/fstab
 
+
+
+
 arch-chroot /mnt/gentoo /bin/bash <<EOF
 emerge-webrsync
 emerge --verbose app-portage/mirrorselect app-misc/resolve-march-native app-portage/cpuid2cpuflags
@@ -640,7 +643,7 @@ ACCEPT_KEYWORDS=\"$architecture\"
 VIDEO_CARDS=\"\"
 INPUT_DEVICES=\"synaptics libinput evdev\"
 GRUB_PLATFORMS=\"efi-64\"
-qemu_softmmu_targets=\"i386 x86_64\"
+qemu_softmmu_targets=\"\"
 qemu_user_targets=\"$qemu_user_targets\"
 LLVM_TARGETS=\"$LLVM_TARGETS\"
 USE=\"bash-completion udev policykit dbus $stage3flags\"" > /etc/portage/make.conf
