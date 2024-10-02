@@ -263,7 +263,7 @@ encryptdiskfn()
     luksv=$1
     encdisk=$2
     if [ $1 = "1" ] ; then
-        echo "luks1 being used, assuming it is being use because grub does not support luks2."
+        #luks1 being used, assuming it is being use because upstream grub without patching, does not support luks2.
         algo="legacy"
     else
         echo "Choose a encryption algorium/pbkdf/hash to use, read docs for further info."
@@ -488,7 +488,7 @@ stage3archivefn()
             break;;
             
             "hardened-systemd") stage3archive="hardened-systemd"
-            stage3flags="systemd hardened -elogind"
+            stage3flags="systemd hardened -elogind "
             clear
             break;;
 
@@ -517,6 +517,11 @@ stage3archivefn()
     sha512=$(cat $wgettemp/$latestarchive.DIGESTS | awk '/# SHA512 HASH/ && !found { getline; print; found=1 }' | awk '{print $1}')
     echo "$sha512 $latestarchive" > $wgettemp/sha512-$latestarchive.txt
     sha512sum -c $wgettemp/sha512-$latestarchive.txt
+    if [ ! $? = 0 ] ; then
+        echo "sha512sum signature on archive not valid."
+        rm -rf $latestarchive
+        exit 10
+    fi 
     tar xpvf $latestarchive --xattrs-include='*.*' --numeric-owner
     rm $latestarchive
 }
@@ -548,6 +553,32 @@ kernelfn()
 
             "Exit") exit ;;
             *) echo "Wrong option please select again"; stage3archivefn;;
+        esac
+    done
+}
+
+firmwarefn() 
+{
+    
+}
+
+bootloaderfn()
+{
+    PS3="Select a bootloader to install: "
+    options=("sys-boot/grub" "Exit" )
+    select opt in "${options[@]}"
+    do
+        case $opt in
+            "sys-boot/grub") kernel="grub"
+            clear
+            break;;
+
+            "Open Documentation") clear
+            bootloaderfn
+            break;;
+
+            "Exit") exit ;;
+            *) echo "Wrong option please select again"; bootloaderfn;;
         esac
     done
 }
@@ -618,9 +649,6 @@ kernelfn
 cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
 genfstab -U /mnt/gentoo/ > /mnt/gentoo/etc/fstab
 
-
-
-
 arch-chroot /mnt/gentoo /bin/bash <<EOF
 emerge-webrsync
 emerge --verbose app-portage/mirrorselect app-misc/resolve-march-native app-portage/cpuid2cpuflags
@@ -646,12 +674,16 @@ GRUB_PLATFORMS=\"efi-64\"
 qemu_softmmu_targets=\"\"
 qemu_user_targets=\"$qemu_user_targets\"
 LLVM_TARGETS=\"$LLVM_TARGETS\"
-USE=\"bash-completion udev policykit dbus $stage3flags\"" > /etc/portage/make.conf
+USE=\"bash-completion udev policykit dbus -modemmanager $stage3flags\"" > /etc/portage/make.conf
 
 mirrorselect -s10 >> /etc/portage/make.conf
 
-echo "sys-kernel/linux-firmware deduplicate unknown-license" > /etc/portage/package.use/linux-firmware
-echo "net-misc/networkmanager -modemmanager" > /etc/portage/package.use/networkmanager
+mkdir -p /etc/portage/package.use/sys-kernel
+echo "sys-kernel/linux-firmware deduplicate unknown-license" >> /etc/portage/package.use/sys-kernel/linux-firmware
+mkdir -p /etc/portage/package.use/net-misc
+echo "net-misc/networkmanager -bluetooth -ppp" >> /etc/portage/package.use/net-misc/networkmanager
+mkdir -p /etc/portage/package.use/sys-boot
+echo "sys-boot/grub mount truetype" >> /etc/portage/package.use/sys-boot/grub
 
 emerge -v net-misc/networkmanager net-misc/openssh app-shells/bash-completion sys-block/io-scheduler-udev-rules sys-boot/grub 
 
@@ -660,11 +692,9 @@ if echo "$stage3archive" | grep "openrc" ; then
     echo $timezone > /etc/timezone
     echo "sys-apps/openrc -netifrc" > /etc/portage/package.use/openrc
     emerge -v net-misc/chrony
-    rc-update add sshd default
     rc-update add chronyd default
 elif echo "$stage3archive" | grep "systemd" ; then 
     ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
-    systemctl enable sshd
     systemctl enable systemd-timesyncd.service
 fi 
 
